@@ -7,6 +7,7 @@ import {
   S3Client,
   PutObjectCommand,
   GetObjectCommand,
+  DeleteObjectCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import crypto from "crypto";
@@ -105,6 +106,75 @@ app.post("/api/upload", upload.single("image"), async (req, res) => {
   req.file.buffer;
 
   res.send("File uploaded successfully");
+});
+
+app.put("/api/update/:id", upload.single("image"), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { caption } = req.body;
+
+    const post = await Upload.findById(id);
+    if (!post) return res.status(404).json({ message: "Post not found" });
+
+    // Update image if a new file is uploaded
+    if (req.file) {
+      const buffer = await sharp(req.file.buffer)
+        .resize({ width: 1920, height: 1080, fit: "contain" })
+        .toBuffer();
+
+      const imageName = crypto.randomBytes(32).toString("hex");
+
+      // Upload new image
+      await s3.send(
+        new PutObjectCommand({
+          Bucket: bucketName,
+          Key: imageName,
+          Body: buffer,
+          ContentType: req.file.mimetype,
+        })
+      );
+
+      // Delete old image only if imageKey exists
+      if (post.imageKey) {
+        await s3.send(
+          new DeleteObjectCommand({ Bucket: bucketName, Key: post.imageKey })
+        );
+      }
+
+      post.imageKey = imageName;
+      post.imageURL = `https://${bucketName}.s3.${bucketRegion}.amazonaws.com/${imageName}`;
+    }
+
+    // Update caption
+    if (caption) post.caption = caption;
+
+    await post.save();
+
+    res.status(200).json({ message: "Post updated successfully", data: post });
+  } catch (err) {
+    console.error("Update error:", err);
+    res.status(500).json({ message: "Failed to update post" });
+  }
+});
+
+app.delete("/api/delete/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const post = await Upload.findById(id);
+    if (!post) return res.status(404).json({ message: "Post not found" });
+
+    if (post.imageKey) {
+      await s3.send(
+        new DeleteObjectCommand({ Bucket: bucketName, Key: post.imageKey })
+      );
+    }
+
+    await post.deleteOne();
+    res.status(200).json({ message: "Post deleted" });
+  } catch (err) {
+    console.error("Delete error:", err);
+    res.status(500).json({ message: "Failed to delete post" });
+  }
 });
 
 connectDB().then(() => {
